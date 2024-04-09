@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.RegularExpressions;
 
 public class Task
@@ -16,6 +17,7 @@ public class Task
     {
         Id = id;
         IsCompleted = isCompleted;
+        Name = "";
     }
         /// <summary>
     /// Converts the task to a Markdown string representation of its list item only.
@@ -26,7 +28,9 @@ public class Task
         var sb = new StringBuilder();
 
         // Write the list item line
-        sb.Append($"   {"[" + (IsCompleted ? "X" : " ") + "]}", " [link]", $" {Id}");
+        var state = IsCompleted ? "X" : " ";
+        sb.Append($"   {{[{state}]}} [link] (#{Id})");
+        
         if (!string.IsNullOrEmpty(Name))
         {
             sb.AppendLine($" ({Name})");
@@ -152,7 +156,7 @@ public class TaskReader
                 {
                     while (indent < currentIndent)
                     {
-                        currentParent = currentParent?.Parent ?? rootTasks.LastOrDefault();
+                        currentParent ??= rootTasks.LastOrDefault();
                         currentIndent--;
                     }
                 }
