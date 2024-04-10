@@ -5,42 +5,29 @@ using System.Text.RegularExpressions;
 
 public class Task
 {
-    public string Id { get; set; }
-    public string Name { get; set; }
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
     public DateTime? StartTime { get; set; }
     public DateTime? EndTime { get; set; }
-    public string Comment { get; set; }
-    public bool IsCompleted { get; set; }
+    public string Comment { get; set; } = "";
+    public bool IsCompleted { get; set; } = false;
+    public int Level { get; set; } = 0;
     public List<Task> Children { get; } = new List<Task>();
-
-    public Task(string id, bool isCompleted)
+    public void AddChild(Task child)
     {
-        Id = id;
-        IsCompleted = isCompleted;
-        Name = "";
+        child.Level = Level + 1;
+        Children.Add(child);
     }
-        /// <summary>
+    /// <summary>
     /// Converts the task to a Markdown string representation of its list item only.
     /// </summary>
     /// <returns>A Markdown string representing the task's list item.</returns>
     public string ToListMarkdownItem()
     {
-        var sb = new StringBuilder();
-
         // Write the list item line
+        var indent = new string(' ', Level * 2);
         var state = IsCompleted ? "X" : " ";
-        sb.Append($"   {{[{state}]}} [link] (#{Id})");
-        
-        if (!string.IsNullOrEmpty(Name))
-        {
-            sb.AppendLine($" ({Name})");
-        }
-        else
-        {
-            sb.AppendLine();
-        }
-
-        return sb.ToString();
+        return $"{indent}* [{state}] [link](#{Id}) {Name}";
     }
 
     /// <summary>
@@ -54,18 +41,21 @@ public class Task
         // Write the task's details (if any)
         if (StartTime.HasValue || EndTime.HasValue || !string.IsNullOrEmpty(Comment))
         {
-            sb.AppendLine($"   # Details:");
+            sb.AppendLine($"# {Id}");
             if (StartTime.HasValue)
             {
-                sb.AppendLine($"      - Start Time: {StartTime.Value.ToString("yyyy-MM-dd HH:mm")}");
+                sb.AppendLine("## start-time");
+                sb.AppendLine($"{StartTime.Value.ToString("yyyy-MM-dd HH:mm")}");
             }
             if (EndTime.HasValue)
             {
-                sb.AppendLine($"      - End Time: {EndTime.Value.ToString("yyyy-MM-dd HH:mm")}");
+                sb.AppendLine("## end-time");
+                sb.AppendLine($"{EndTime.Value.ToString("yyyy-MM-dd HH:mm")}");
             }
             if (!string.IsNullOrEmpty(Comment))
             {
-                sb.AppendLine($"      - Comment: {Comment}");
+                sb.AppendLine("## comment");
+                sb.AppendLine($"{Comment}");
             }
         }
 
@@ -75,146 +65,161 @@ public class Task
 
 public class TaskReader
 {
-    private const string TaskListItemPattern = @"^\s*(\[(X| )\])\s*(\[link\])\s*(.*)$";
-    private const string TaskHeaderPattern = @"^# (\w+)$";
-    private const string DetailPattern = @"^## (\w+):\s*(.*)$";
-
+    private const string TaskListItemPattern = @"^\s*\*\s*(\[(X| )\])\s*\[link\]\s*\((.*)\)\s*(.*)$";
+    private const string TaskHeaderPattern = @"^#\s*(\w+)$";
+    private const string DetailPattern = @"^##\s*(\w+)$";
+    private Dictionary<string, Task> headersById = new Dictionary<string, Task>();
     /// <summary>
     /// Parses the given Markdown text and returns a list of tasks.
     /// </summary>
     /// <param name="markdownText">The Markdown text to parse.</param>
     /// <returns>A list of tasks extracted from the Markdown text.</returns>
-    public List<Task> ParseMarkdown(string markdownText)
+    public List<Task> ParseMarkdown(string[] markdownText)
     {
-        var rootTasks = new List<Task>();
-        var headersById = new Dictionary<string, Task>();
-        var currentIndent = 0;
-        var currentParent = null as Task;
-        var currentLine = 0;
+        var SpanMD = markdownText.AsSpan();
+        // Search for the start of the header domain
+        var headerStartIndex = FindFirstHeaderIndex(SpanMD);
 
-        // Search for the start of the list domain
-        var listStartIndex = FindListStart(markdownText);
-
-        if (listStartIndex == -1)
+        if (headerStartIndex == -1)
         {
-            throw new ArgumentException("Invalid Markdown format: List domain not found at the beginning of the file.");
+            throw new ArgumentException("Invalid Markdown format: Header domain not found at the interval of the file.");
         }
 
-        // Collect all headers and their details from the remaining part of the file (after the list domain)
-        var postListMarkdown = markdownText.Substring(listStartIndex);
-        var currentHeader = null as Task;
-        foreach (var line in postListMarkdown.Split('\n'))
+
+        CollectHeaderbyID(SpanMD[headerStartIndex..]);
+        var rootTask = new Task()
         {
-            if (Regex.IsMatch(line, TaskHeaderPattern))
-            {
-                var match = Regex.Match(line, TaskHeaderPattern);
-                var headerId = match.Groups[1].Value;
-                var headerTask = new Task(headerId, false);
-                headersById.Add(headerId, headerTask);
-                currentHeader = headerTask;
-            }
-            else if (currentHeader != null && Regex.IsMatch(line, DetailPattern))
-            {
-                var detailMatch = Regex.Match(line, DetailPattern);
-                var detailKey = detailMatch.Groups[1].Value.ToLower();
-                var detailValue = detailMatch.Groups[2].Value;
-
-                // Update the current header's properties based on the detail key-value pair
-                switch (detailKey)
-                {
-                    case "name":
-                        currentHeader.Name = detailValue;
-                        break;
-                    case "start-time":
-                        currentHeader.StartTime = DateTime.Parse(detailValue);
-                        break;
-                    case "end-time":
-                        currentHeader.EndTime = DateTime.Parse(detailValue);
-                        break;
-                    case "comment":
-                        currentHeader.Comment = detailValue;
-                        break;
-                }
-            }
-        }
-
-        // Parse the list items, associating them with their corresponding headers
-        var listMarkdown = markdownText.Substring(0, listStartIndex);
-        foreach (var line in listMarkdown.Split('\n'))
-        {
-            currentLine++;
-
-            if (Regex.IsMatch(line, TaskListItemPattern))
-            {
-                var match = Regex.Match(line, TaskListItemPattern);
-                var isCompleted = match.Groups[1].Value == "[X]";
-                var id = match.Groups[3].Value;
-                var task = new Task(id, isCompleted);
-
-                var indent = CountLeadingSpaces(line);
-                if (indent <= currentIndent)
-                {
-                    while (indent < currentIndent)
-                    {
-                        currentParent ??= rootTasks.LastOrDefault();
-                        currentIndent--;
-                    }
-                }
-                else
-                {
-                    currentIndent = indent;
-                }
-
-                if (currentParent != null)
-                {
-                    currentParent.Children.Add(task);
-                }
-                else
-                {
-                    rootTasks.Add(task);
-                }
-
-                // Try to associate the task with its corresponding header
-                if (headersById.TryGetValue(id, out var headerTask))
-                {
-                    task.Name = headerTask.Name;
-                    task.StartTime = headerTask.StartTime;
-                    task.EndTime = headerTask.EndTime;
-                    task.Comment = headerTask.Comment;
-                }
-
-                currentParent = task;
-            }
-        }
-
-        return rootTasks;
+            //AddChild will use Level + 1
+            Level = -1,
+        };
+        int start_index = 0;
+        BuildTaskTree(SpanMD[..headerStartIndex], ref start_index, rootTask);
+        return rootTask.Children;
     }
-
-    /// <summary>
-    /// Finds the index of the first line containing a list item pattern in the given Markdown text.
-    /// Returns -1 if no list item is found.
-    /// </summary>
-    /// <param name="markdownText">The Markdown text to search in.</param>
-    /// <returns>The index of the first list item line or -1 if not found.</returns>
-    private int FindListStart(string markdownText)
+    private string CollectParagrahStr(Span<string> HeaderDomain, ref int search_index)
     {
-        var lines = markdownText.Split('\n');
+        int start_index = search_index;
+        for (; search_index < HeaderDomain.Length; search_index++)
+        {
+            if (HeaderDomain[search_index].StartsWith("#"))
+            {
+                break;
+            }
+        }
+        Span<string> lines = HeaderDomain[start_index..search_index];
+        return string.Join('\n', lines.ToArray());
+    }
+    private void CollectDetailsWithTask(Span<string> HeaderDomain, ref int search_index, Task task)
+    {
+        for (; search_index < HeaderDomain.Length; search_index++)
+        {
+            var line = HeaderDomain[search_index];
+            var detailMatch = Regex.Match(line, DetailPattern);
+            if (!detailMatch.Success)
+            {
+                return;
+            }
+            var detailKey = detailMatch.Groups[0].Value;
+            var detailValue = CollectParagrahStr(HeaderDomain, ref search_index);
+            // Update the current header's properties based on the detail key-value pair
+            switch (detailKey)
+            {
+                case "name":
+                    task.Name = detailValue;
+                    break;
+                case "start-time":
+                    task.StartTime = DateTime.Parse(detailValue);
+                    break;
+                case "end-time":
+                    task.EndTime = DateTime.Parse(detailValue);
+                    break;
+                case "comment":
+                    task.Comment = detailValue;
+                    break;
+                default:
+                    throw new ArgumentException($"Invalid detail key: {detailKey} in header: {task.Id}");
+            }
+        }
+    }
+    private void CollectHeaderbyID(Span<string> HeaderDomain)
+    {
+        // Collect all headers and their details from the remaining part of the file (after the list domain)
+        var currentHeader = null as Task;
+        for (int search_index = 0; search_index < HeaderDomain.Length;)
+        {
+            var line = HeaderDomain[search_index];
+            var match = Regex.Match(line, TaskHeaderPattern);
+            if (!match.Success)
+            {
+                throw new ArgumentException($"Invalid Markdown format: Header Parser Error at line: {line}");
+            }
+            var headerId = match.Groups[0].Value;
+            var headerTask = new Task()
+            {
+                Id = headerId,
+            };
+            if (headersById.ContainsKey(headerId))
+            {
+                throw new ArgumentException($"Duplicate header ID: {headerId}");
+            }
+            headersById.Add(headerId, headerTask);
+            search_index++;
+            CollectDetailsWithTask(HeaderDomain, ref search_index, headerTask);
+        }
+    }
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="ListDomain">Represents the entire list, containing solely list elements with no additional content.</param>
+    /// <param name="start_index">The index at which scanning begins, shared throughout the recursive calls.</param>
+    /// <param name="expect_level">Indicates the expected hierarchical level. The list is processed only when its level matches the <paramref name="expect_level"/>; 
+    /// otherwise, it is directly returned.
+    /// A special case occurs when <paramref name="expect_level"/> is -1, representing the very beginning and serving as a child node of the root task.</param>
+    /// <param name="father">Specifies the parent node, i.e., the parent of the current node.</param>
+    private void BuildTaskTree(Span<string> ListDomain, ref int start_index, Task father)
+    {
+        var line = ListDomain[start_index];
+        start_index++;
+        int level = CountLevelFromSpaces(line);
+        if (level < father.Level + 1)
+        {
+            return;
+        }
+        if (level > father.Level + 1)
+        {
+            throw new Exception($"Invalid Task List Level : {line}");
+        }
+        var match = Regex.Match(line, TaskListItemPattern);
+        var isCompleted = match.Groups[0].Value == "X";
+        var id = match.Groups[1].Value;
+        var name = match.Groups[2].Value;
+        var task = new Task()
+        {
+            Id = id,
+            Name = name,
+            IsCompleted = isCompleted
+        };
+        father.AddChild(task);
+        BuildTaskTree(ListDomain, ref start_index, task);
+    }
+    /// <summary>
+    /// Finds the starting position of task details within the given markdown text.
+    /// </summary>
+    /// <param name="markdownText">An array of strings containing the markdown text.</param>
+    /// <returns>The index of the starting line for task details if found, otherwise -1.</returns>
+    private int FindFirstHeaderIndex(Span<string> markdownText)
+    {
+        var lines = markdownText;
         for (int i = 0; i < lines.Length; i++)
         {
-            if (Regex.IsMatch(lines[i], TaskListItemPattern))
+            if (Regex.IsMatch(lines[i], TaskHeaderPattern))
             {
                 return i;
             }
         }
         return -1;
     }
-
-    /// <summary>
-    /// Counts the number of leading spaces in the given line.
-    /// </summary>
-    /// <param name="line">The line to count leading spaces in.</param>
-    /// <returns>The number of leading spaces in the line.</returns>
-    private int CountLeadingSpaces(string line)
+    private int CountLevelFromSpaces(string line)
     {
         int count = 0;
         foreach (char c in line)
@@ -228,7 +233,7 @@ public class TaskReader
                 break;
             }
         }
-        return count;
+        return count / 4;
     }
 }
 public class TaskWriter
