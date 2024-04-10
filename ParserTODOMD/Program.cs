@@ -3,9 +3,23 @@ using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
 
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        // Read the input file
+        var input = File.ReadAllLines("/home/yijli/todo.md/grammer/example.md");
+        var Reader = new TaskReader();
+        var tasks = Reader.ParseMarkdown(input);
+        var writer = new TaskWriter();
+        writer.WriteToMarkdownFile(tasks, Console.Out);
+    }
+}
+
 public class Task
 {
-    public string Id { get; set; } = "";
+    public int Id { get; set; } = -1;
     public string Name { get; set; } = "";
     public DateTime? StartTime { get; set; }
     public DateTime? EndTime { get; set; }
@@ -45,12 +59,12 @@ public class Task
             if (StartTime.HasValue)
             {
                 sb.AppendLine("## start-time");
-                sb.AppendLine($"{StartTime.Value.ToString("yyyy-MM-dd HH:mm")}");
+                sb.AppendLine($"{StartTime.Value.ToString("yyyy-MM-dd")}");
             }
             if (EndTime.HasValue)
             {
                 sb.AppendLine("## end-time");
-                sb.AppendLine($"{EndTime.Value.ToString("yyyy-MM-dd HH:mm")}");
+                sb.AppendLine($"{EndTime.Value.ToString("yyyy-MM-dd")}");
             }
             if (!string.IsNullOrEmpty(Comment))
             {
@@ -59,16 +73,16 @@ public class Task
             }
         }
 
-        return sb.ToString().TrimEnd('\n'); // Trim the last newline
+        return sb.ToString(); // Trim the last newline
     }
 }
 
 public class TaskReader
 {
-    private const string TaskListItemPattern = @"^\s*\*\s*(\[(X| )\])\s*\[link\]\s*\((.*)\)\s*(.*)$";
+    private const string TaskListItemPattern = @"^\s*\*\s*\[(X| )\]\s*\[link\]\s*\(#(.*)\)\s*(.*)$";
     private const string TaskHeaderPattern = @"^#\s*(\w+)$";
-    private const string DetailPattern = @"^##\s*(\w+)$";
-    private Dictionary<string, Task> headersById = new Dictionary<string, Task>();
+    private const string DetailPattern = @"^##\s*(\S+)$";
+    private Dictionary<int, Task> headersById = new Dictionary<int, Task>();
     /// <summary>
     /// Parses the given Markdown text and returns a list of tasks.
     /// </summary>
@@ -93,10 +107,14 @@ public class TaskReader
             Level = -1,
         };
         int start_index = 0;
-        BuildTaskTree(SpanMD[..headerStartIndex], ref start_index, rootTask);
+        var HeaderDomain = SpanMD[..headerStartIndex];
+        while (start_index < HeaderDomain.Length)
+        {
+            BuildTaskTree(SpanMD[..headerStartIndex], ref start_index, rootTask);
+        }
         return rootTask.Children;
     }
-    private string CollectParagrahStr(Span<string> HeaderDomain, ref int search_index)
+    private string CollectParagrahStr(Span<string> HeaderDomain, ref int search_index, bool skip_tail_space_line = false)
     {
         int start_index = search_index;
         for (; search_index < HeaderDomain.Length; search_index++)
@@ -107,11 +125,18 @@ public class TaskReader
             }
         }
         Span<string> lines = HeaderDomain[start_index..search_index];
+        if (skip_tail_space_line)
+        {
+            while (lines.Length > 0 && string.IsNullOrWhiteSpace(lines[lines.Length - 1]))
+            {
+                lines = lines[..^1];
+            }
+        }
         return string.Join('\n', lines.ToArray());
     }
     private void CollectDetailsWithTask(Span<string> HeaderDomain, ref int search_index, Task task)
     {
-        for (; search_index < HeaderDomain.Length; search_index++)
+        for (; search_index < HeaderDomain.Length;)
         {
             var line = HeaderDomain[search_index];
             var detailMatch = Regex.Match(line, DetailPattern);
@@ -119,14 +144,12 @@ public class TaskReader
             {
                 return;
             }
-            var detailKey = detailMatch.Groups[0].Value;
-            var detailValue = CollectParagrahStr(HeaderDomain, ref search_index);
+            search_index++;
+            var detailKey = detailMatch.Groups[1].Value;
+            var detailValue = CollectParagrahStr(HeaderDomain, ref search_index, detailKey == "comment");
             // Update the current header's properties based on the detail key-value pair
             switch (detailKey)
             {
-                case "name":
-                    task.Name = detailValue;
-                    break;
                 case "start-time":
                     task.StartTime = DateTime.Parse(detailValue);
                     break;
@@ -147,13 +170,18 @@ public class TaskReader
         var currentHeader = null as Task;
         for (int search_index = 0; search_index < HeaderDomain.Length;)
         {
+            if (string.IsNullOrWhiteSpace(HeaderDomain[search_index]))
+            {
+                search_index++;
+                continue;
+            }
             var line = HeaderDomain[search_index];
             var match = Regex.Match(line, TaskHeaderPattern);
             if (!match.Success)
             {
                 throw new ArgumentException($"Invalid Markdown format: Header Parser Error at line: {line}");
             }
-            var headerId = match.Groups[0].Value;
+            var headerId = int.Parse(match.Groups[1].Value);
             var headerTask = new Task()
             {
                 Id = headerId,
@@ -179,7 +207,11 @@ public class TaskReader
     private void BuildTaskTree(Span<string> ListDomain, ref int start_index, Task father)
     {
         var line = ListDomain[start_index];
-        start_index++;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            start_index++;
+            return;
+        }
         int level = CountLevelFromSpaces(line);
         if (level < father.Level + 1)
         {
@@ -190,17 +222,37 @@ public class TaskReader
             throw new Exception($"Invalid Task List Level : {line}");
         }
         var match = Regex.Match(line, TaskListItemPattern);
-        var isCompleted = match.Groups[0].Value == "X";
-        var id = match.Groups[1].Value;
-        var name = match.Groups[2].Value;
-        var task = new Task()
+        if (!match.Success)
         {
-            Id = id,
-            Name = name,
-            IsCompleted = isCompleted
-        };
+            throw new Exception($"Invalid Task List Item : {line}");
+        }
+        var id = int.Parse(match.Groups[2].Value);
+        if (!headersById.ContainsKey(id))
+        {
+            throw new Exception($"Invalid Task ID : {line}");
+        }
+        var isCompleted = match.Groups[1].Value == "X";
+        var name = match.Groups[3].Value;
+        var task = headersById[id];
+        task.Name = name;
+        task.IsCompleted = isCompleted;
+        start_index++;
         father.AddChild(task);
-        BuildTaskTree(ListDomain, ref start_index, task);
+        while (start_index < ListDomain.Length)
+        {
+            if (string.IsNullOrWhiteSpace(ListDomain[start_index]))
+            {
+                start_index++;
+                continue;
+            }
+            int next_level = CountLevelFromSpaces(ListDomain[start_index]);
+            if (next_level > task.Level)
+            {
+                BuildTaskTree(ListDomain, ref start_index, task);
+                continue;
+            }
+            break;
+        }
     }
     /// <summary>
     /// Finds the starting position of task details within the given markdown text.
@@ -233,7 +285,7 @@ public class TaskReader
                 break;
             }
         }
-        return count / 4;
+        return count / 2;
     }
 }
 public class TaskWriter
@@ -245,28 +297,24 @@ public class TaskWriter
     /// </summary>
     /// <param name="tasks">The list of tasks to write.</param>
     /// <param name="filePath">The path of the output Markdown file.</param>
-    public void WriteToMarkdownFile(List<Task> tasks, string filePath)
+    public void WriteToMarkdownFile(List<Task> tasks, TextWriter writer)
     {
-        using (var writer = new StreamWriter(filePath))
+        // First pass: Write only list items (recursively)
+        foreach (var task in tasks)
         {
-            // First pass: Write only list items (recursively)
-            foreach (var task in tasks)
-            {
-                WriteTaskListMarkdown(writer, task);
-            }
-
-            // Second pass: Write details for each task (recursively)
-            foreach (var task in tasks)
-            {
-                WriteTaskDetailsMarkdown(writer, task);
-            }
+            WriteTaskListMarkdown(writer, task);
+        }
+        writer.WriteLine();
+        // Second pass: Write details for each task (recursively)
+        foreach (var task in tasks)
+        {
+            WriteTaskDetailsMarkdown(writer, task);
         }
     }
 
-    private void WriteTaskListMarkdown(StreamWriter writer, Task task)
+    private void WriteTaskListMarkdown(TextWriter writer, Task task)
     {
-        writer.Write(task.ToListMarkdownItem());
-        writer.WriteLine(); // Add an extra newline between tasks
+        writer.WriteLine(task.ToListMarkdownItem());
 
         foreach (var child in task.Children)
         {
@@ -274,10 +322,10 @@ public class TaskWriter
         }
     }
 
-    private void WriteTaskDetailsMarkdown(StreamWriter writer, Task task)
+    private void WriteTaskDetailsMarkdown(TextWriter writer, Task task)
     {
-        writer.Write(task.ToDetailsMarkdown());
-        writer.WriteLine(); // Add an extra newline between tasks
+        // WriteLine will append an extra newline between tasks
+        writer.WriteLine(task.ToDetailsMarkdown());
 
         foreach (var child in task.Children)
         {
